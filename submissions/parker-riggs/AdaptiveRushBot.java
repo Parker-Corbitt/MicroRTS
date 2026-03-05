@@ -42,8 +42,10 @@ public class AdaptiveRushBot extends AI {
     private static final int ENEMY_PRESSURE_DISTANCE = 8;
     // To avoid expensive per-tick LLM calls, re-query only every N game ticks.
     private static final int LLM_CONSULT_COOLDOWN = 25;
+    // Keep decisions readable in logs without printing every frame.
+    private static final int DECISION_LOG_COOLDOWN = 50;
     // Tight timeout so gameplay remains responsive even if local model is slow.
-    private static final Duration LLM_TIMEOUT = Duration.ofMillis(350);
+    private static final Duration LLM_TIMEOUT = Duration.ofMillis(800);
 
     // Core RTS context and the two underlying scripted controllers.
     private final UnitTypeTable unitTypeTable;
@@ -58,6 +60,13 @@ public class AdaptiveRushBot extends AI {
 
     // Tracks the last tick when we successfully accepted an LLM decision.
     private int lastLLMConsultTime = -1000;
+    // Last tick when we emitted a decision source log.
+    private int lastDecisionLogTime = -1000;
+    // Telemetry for confidence that LLM is contributing decisions.
+    private int llmConsultAttempts = 0;
+    private int llmConsultSuccesses = 0;
+    private int llmDrivenDecisionCount = 0;
+    private int heuristicDecisionCount = 0;
     // Most recent selected strategy. Cached to keep behavior stable between LLM polls.
     private boolean cachedUseLightRush;
 
@@ -70,8 +79,9 @@ public class AdaptiveRushBot extends AI {
         this.workerRush = new WorkerRush(unitTypeTable);
         this.lightRush = new LightRush(unitTypeTable);
         this.httpClient = HttpClient.newBuilder().connectTimeout(LLM_TIMEOUT).build();
-        this.llmEndpoint = System.getenv().getOrDefault("OLLAMA_ENDPOINT", "http://localhost:11434/api/generate");
+        this.llmEndpoint = resolveEndpoint();
         this.llmModel = System.getenv().getOrDefault("OLLAMA_MODEL", "llama3.1:8b");
+        System.out.println("[AdaptiveRushBot] LLM endpoint=" + llmEndpoint + " model=" + llmModel);
     }
 
     @Override
@@ -82,6 +92,11 @@ public class AdaptiveRushBot extends AI {
         workerRush.reset();
         lightRush.reset();
         lastLLMConsultTime = -1000;
+        lastDecisionLogTime = -1000;
+        llmConsultAttempts = 0;
+        llmConsultSuccesses = 0;
+        llmDrivenDecisionCount = 0;
+        heuristicDecisionCount = 0;
         cachedUseLightRush = false;
     }
 
@@ -114,16 +129,27 @@ public class AdaptiveRushBot extends AI {
      * 3) Otherwise use deterministic heuristic policy.
      */
     private boolean decideUseLightRush(int player, GameState gameState) {
+        // If we recently accepted an LLM decision, keep it active until next LLM poll.
+        if (lastLLMConsultTime >= 0 && gameState.getTime() - lastLLMConsultTime < LLM_CONSULT_COOLDOWN) {
+            llmDrivenDecisionCount++;
+            maybeLogDecision(gameState.getTime(), "LLM_CACHED", cachedUseLightRush);
+            return cachedUseLightRush;
+        }
+
         if (gameState.getTime() - lastLLMConsultTime >= LLM_CONSULT_COOLDOWN) {
             Boolean llmDecision = consultLLM(player, gameState);
             if (llmDecision != null) {
                 cachedUseLightRush = llmDecision;
                 lastLLMConsultTime = gameState.getTime();
+                llmDrivenDecisionCount++;
+                maybeLogDecision(gameState.getTime(), "LLM", cachedUseLightRush);
                 return cachedUseLightRush;
             }
         }
 
         cachedUseLightRush = shouldUseLightRush(player, gameState);
+        heuristicDecisionCount++;
+        maybeLogDecision(gameState.getTime(), "HEURISTIC", cachedUseLightRush);
         return cachedUseLightRush;
     }
 
@@ -137,6 +163,7 @@ public class AdaptiveRushBot extends AI {
      */
     private Boolean consultLLM(int player, GameState gameState) {
         try {
+            llmConsultAttempts++;
             StrategySummary summary = summarizeState(player, gameState);
             String prompt = buildPrompt(summary, gameState.getTime());
 
@@ -167,15 +194,19 @@ public class AdaptiveRushBot extends AI {
             // Parse permissively: prefer explicit canonical tokens, then looser keyword fallback.
             String normalized = llmText.toUpperCase(Locale.ROOT);
             if (normalized.contains("LIGHT_RUSH") || normalized.contains("LIGHTRUSH")) {
+                llmConsultSuccesses++;
                 return true;
             }
             if (normalized.contains("WORKER_RUSH") || normalized.contains("WORKERRUSH")) {
+                llmConsultSuccesses++;
                 return false;
             }
             if (normalized.contains("LIGHT")) {
+                llmConsultSuccesses++;
                 return true;
             }
             if (normalized.contains("WORKER")) {
+                llmConsultSuccesses++;
                 return false;
             }
             return null;
@@ -312,6 +343,41 @@ public class AdaptiveRushBot extends AI {
     }
 
     /**
+     * Resolves Ollama endpoint from env vars with backward-compatible defaults:
+     * - OLLAMA_ENDPOINT (full URL) takes precedence
+     * - OLLAMA_HOST (base URL) maps to /api/generate
+     */
+    private String resolveEndpoint() {
+        String endpoint = System.getenv("OLLAMA_ENDPOINT");
+        if (endpoint != null && !endpoint.trim().isEmpty()) {
+            return endpoint.trim();
+        }
+
+        String host = System.getenv().getOrDefault("OLLAMA_HOST", "http://localhost:11434").trim();
+        if (host.endsWith("/")) {
+            host = host.substring(0, host.length() - 1);
+        }
+        return host + "/api/generate";
+    }
+
+    /**
+     * Periodic runtime trace to confirm whether strategy decisions are LLM-driven.
+     */
+    private void maybeLogDecision(int time, String source, boolean useLightRush) {
+        if (time - lastDecisionLogTime < DECISION_LOG_COOLDOWN) {
+            return;
+        }
+        lastDecisionLogTime = time;
+        String strategy = useLightRush ? "LIGHT_RUSH" : "WORKER_RUSH";
+        System.out.println(
+                "[AdaptiveRushBot] t=" + time
+                        + " source=" + source
+                        + " strategy=" + strategy
+                        + " llm_success=" + llmConsultSuccesses
+                        + "/" + llmConsultAttempts);
+    }
+
+    /**
      * Deterministic fallback strategy selector (used when LLM is unavailable).
      *
      * Rules are ordered from strongest to weakest trigger:
@@ -367,5 +433,29 @@ public class AdaptiveRushBot extends AI {
      */
     public List<ParameterSpecification> getParameters() {
         return new ArrayList<>();
+    }
+
+    @Override
+    public void gameOver(int winner) {
+        int totalDecisions = llmDrivenDecisionCount + heuristicDecisionCount;
+        if (totalDecisions <= 0) {
+            System.out.println("[AdaptiveRushBot] game_over winner=" + winner + " no strategy decisions were recorded.");
+            return;
+        }
+
+        double llmPercent = (100.0 * llmDrivenDecisionCount) / totalDecisions;
+        double heuristicPercent = (100.0 * heuristicDecisionCount) / totalDecisions;
+
+        System.out.printf(
+                Locale.ROOT,
+                "[AdaptiveRushBot] game_over winner=%d decisions=%d llm_driven=%d (%.1f%%) heuristic=%d (%.1f%%) llm_consult_success=%d/%d%n",
+                winner,
+                totalDecisions,
+                llmDrivenDecisionCount,
+                llmPercent,
+                heuristicDecisionCount,
+                heuristicPercent,
+                llmConsultSuccesses,
+                llmConsultAttempts);
     }
 }
