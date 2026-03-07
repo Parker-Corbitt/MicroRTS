@@ -615,6 +615,8 @@ python3 tournament/match_server.py --port 8080</code></pre>
 
         // --- Server connection ---
 
+        var autorunPending = false; // set true when URL params want auto-start
+
         function checkServer() {
             var url = getServerUrl() + '/api/agents';
             fetch(url, { signal: AbortSignal.timeout(3000) })
@@ -633,6 +635,21 @@ python3 tournament/match_server.py --port 8080</code></pre>
                 .then(function (r) { return r.json(); })
                 .then(function (data) {
                     populateMaps(data.maps, data.default);
+                    // Re-apply URL params after server rebuilds dropdowns
+                    var urlParams = new URLSearchParams(window.location.search);
+                    var pAi1 = urlParams.get('ai1');
+                    var pAi2 = urlParams.get('ai2');
+                    var pMap = urlParams.get('map');
+                    if (pAi1) ai1Select.value = pAi1;
+                    if (pAi2) ai2Select.value = pAi2;
+                    if (pMap) mapSelect.value = pMap;
+                    if (pAi1 || pAi2) { updateDesc('ai1'); updateDesc('ai2'); }
+                    if (pMap) loadMapPreview(pMap);
+                    // Auto-start match if URL params were provided
+                    if (autorunPending) {
+                        autorunPending = false;
+                        btnFight.click();
+                    }
                 })
                 .catch(function () {
                     serverOnline = false;
@@ -1325,7 +1342,7 @@ python3 tournament/match_server.py --port 8080</code></pre>
         ai1Select.value = 'ai.abstraction.LightRush';
         ai2Select.value = 'ai.RandomBiasedAI';
 
-        // Check URL parameters for pre-filling (from leaderboard "Watch Replay" links)
+        // Check URL parameters for pre-filling (from leaderboard links)
         var urlParams = new URLSearchParams(window.location.search);
         var paramAi1 = urlParams.get('ai1');
         var paramAi2 = urlParams.get('ai2');
@@ -1333,6 +1350,8 @@ python3 tournament/match_server.py --port 8080</code></pre>
         if (paramAi1) ai1Select.value = paramAi1;
         if (paramAi2) ai2Select.value = paramAi2;
         if (paramMap) mapSelect.value = paramMap;
+        // Auto-start when server connects if we arrived via URL params
+        if (paramAi1 && paramAi2) autorunPending = true;
 
         updateDesc('ai1');
         updateDesc('ai2');

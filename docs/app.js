@@ -255,7 +255,7 @@
                 var replayUrl = 'match.html?ai1=' + encodeURIComponent(agentClass) +
                     '&ai2=' + encodeURIComponent(anchorClass) +
                     '&map=' + encodeURIComponent(map);
-                html += '<a class="replay-btn" href="' + replayUrl + '">Watch Replay</a>';
+                html += '<a class="replay-btn" href="' + replayUrl + '">Run Match</a>';
             }
 
             html += '</div>';
