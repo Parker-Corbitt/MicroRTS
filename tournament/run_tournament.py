@@ -274,7 +274,7 @@ def compile_all():
     return True
 
 
-def opponent_breakdown(reference_games):
+def opponent_breakdown(reference_games, max_cycles):
     """Build per-opponent stats dict."""
     breakdown = {}
     for anchor_class, games in reference_games.items():
@@ -285,7 +285,7 @@ def opponent_breakdown(reference_games):
         draws = sum(1 for g in games if g["result"] == "draw")
         losses = sum(1 for g in games if g["result"] not in ("win", "draw"))
         avg_score = sum(
-            calculate_game_score(g["result"], g["ticks"]) for g in games
+            calculate_game_score(g["result"], g["ticks"], max_cycles) for g in games
         ) / len(games) if games else 0.0
         weighted_pts = round(avg_score * anchor_info["weight"], 1)
         breakdown[anchor_info["name"]] = {
@@ -494,7 +494,7 @@ def run_tournament(games_per_pair=1, skip_h2h=False, submissions_dir="submission
         for map_info in MAPS:
             ml = map_info["label"]
             ref_games = all_results[name][ml]["reference_games"]
-            bd = opponent_breakdown(ref_games)
+            bd = opponent_breakdown(ref_games, map_info["max_cycles"])
             map_details[ml] = {
                 "map": map_info["path"],
                 "max_cycles": map_info["max_cycles"],
