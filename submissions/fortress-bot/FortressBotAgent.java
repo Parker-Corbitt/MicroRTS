@@ -143,7 +143,7 @@ public class FortressBotAgent extends AbstractionLayerAI {
     private static final String OLLAMA_HOST =
             System.getenv().getOrDefault("OLLAMA_HOST", "http://localhost:11434");
     private static final String OLLAMA_MODEL =
-            System.getenv().getOrDefault("OLLAMA_MODEL", "qwen3.5:9b");
+            System.getenv().getOrDefault("OLLAMA_MODEL", "llama3.1:8b");
     private static final boolean DEBUG =
             Boolean.parseBoolean(System.getenv().getOrDefault("ORACLE_STRAT_DEBUG", "false"));
     private static final int CONSULT_INTERVAL = getEnvInt("OLLAMA_SUBMISSION_INTERVAL", 130);
