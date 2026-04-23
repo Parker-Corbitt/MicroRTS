@@ -105,10 +105,6 @@ public class MCTSAgent extends NaiveMCTS {
     private String resolvedOllamaModel = null;
     private String llmPreferredUnitOverride = null;
     private int llmPreferredUnitOverrideUntil = -1;
-    private volatile boolean llmRequestInFlight = false;
-    private volatile String pendingLlmResponse = null;
-    private volatile int pendingLlmResponseTick = -1;
-    private int llmRequestGeneration = 0;
 
     public MCTSAgent(UnitTypeTable utt) {
         super(120, -1, 105, 10,
@@ -143,7 +139,6 @@ public class MCTSAgent extends NaiveMCTS {
     public PlayerAction getAction(int player, GameState gs) throws Exception {
         if (!gs.canExecuteAnyAction(player)) return new PlayerAction();
         activePlayer = player;
-        applyPendingOllamaResponse();
 
         if (isEightByEightMap(gs) && !llmTinyMapPlanResolved) {
             scheduleOllamaConsult(player, gs, true);
@@ -174,7 +169,6 @@ public class MCTSAgent extends NaiveMCTS {
             scheduleOllamaConsult(player, gs, false);
         }
 
-        applyPendingOllamaResponse();
         applyDeterministicStrategy(player, gs);
         applyStanceBiases();
         if (finishMode) {
@@ -502,47 +496,12 @@ public class MCTSAgent extends NaiveMCTS {
 
         final int requestTick = gs.getTime();
         final String prompt = buildPrompt(player, gs);
-        final int generation;
-        synchronized (this) {
-            if (llmRequestInFlight) return;
-            llmRequestInFlight = true;
-            generation = llmRequestGeneration;
-            lastConsultTick = requestTick;
+        lastConsultTick = requestTick;
+        try {
+            String response = callOllama(prompt);
+            parseStrategyFromResponse(response, requestTick);
+        } catch (Exception ignored) {
         }
-
-        Thread worker = new Thread(() -> {
-            try {
-                String response = callOllama(prompt);
-                synchronized (MCTSAgent.this) {
-                    if (llmRequestGeneration == generation) {
-                        pendingLlmResponse = response;
-                        pendingLlmResponseTick = requestTick;
-                    }
-                }
-            } catch (Exception ignored) {
-            } finally {
-                synchronized (MCTSAgent.this) {
-                    if (llmRequestGeneration == generation) {
-                        llmRequestInFlight = false;
-                    }
-                }
-            }
-        }, "penguinbot-ollama");
-        worker.setDaemon(true);
-        worker.start();
-    }
-
-    private void applyPendingOllamaResponse() {
-        String raw;
-        int tick;
-        synchronized (this) {
-            if (pendingLlmResponse == null) return;
-            raw = pendingLlmResponse;
-            tick = pendingLlmResponseTick;
-            pendingLlmResponse = null;
-            pendingLlmResponseTick = -1;
-        }
-        parseStrategyFromResponse(raw, tick >= 0 ? tick : 0);
     }
 
     /**
@@ -1390,12 +1349,6 @@ public class MCTSAgent extends NaiveMCTS {
         preferredActions.add("DEFEND_BASE");
         llmPreferredUnitOverride = null;
         llmPreferredUnitOverrideUntil = -1;
-        synchronized (this) {
-            llmRequestGeneration++;
-            llmRequestInFlight = false;
-            pendingLlmResponse = null;
-            pendingLlmResponseTick = -1;
-        }
     }
 
     /**
